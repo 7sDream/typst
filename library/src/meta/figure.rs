@@ -1,41 +1,52 @@
 use std::str::FromStr;
 
-use super::{
-    Count, Counter, CounterUpdate, LocalName, Numbering, NumberingPattern, ReferenceInfo,
-    Supplement,
-};
+use super::{Counter, LocalName, Numbering, NumberingPattern, RefAnchor, Supplement};
 use crate::layout::{BlockElem, VElem};
 use crate::prelude::*;
 use crate::text::TextElem;
 
-/// A caption in figure.
+/// A anchor to be referenced.
 ///
-/// Display: Caption
+/// Display: Anchor
 /// Category: meta
-#[element(Locatable, Show)]
-pub struct CaptionElem {
-    /// Caption content.
+#[element(Locatable, Synthesize, Show)]
+pub struct AnchorElem {
     #[required]
-    pub content: Content,
+    pub counter: Counter,
 
-    /// The supplement/prefix of the caption, will be used in reference too.
-    pub supplement: Smart<Option<Supplement>>,
+    #[default(NonZeroUsize::ONE)]
+    pub level: NonZeroUsize,
 
-    /// Counter of this caption, if do not provide, the default one will be used.
-    pub counter: Option<Counter>,
+    #[required]
+    pub supplement: Option<Content>,
 
-    /// The separator between "Figure 1", and caption, default will be ": "
-    pub sep: Option<Content>,
+    #[required]
+    pub numbering: Option<Numbering>,
 }
 
-cast_from_value! {
-    CaptionElem,
-    v: Content => v.to::<Self>().map(|c| c.clone()).unwrap_or_else(|| CaptionElem::new(v))
+impl Synthesize for AnchorElem {
+    fn synthesize(&mut self, _styles: StyleChain) {
+        self.push_numbering(self.numbering())
+    }
 }
 
-impl Show for CaptionElem {
-    fn show(&self, _vt: &mut Vt, _styles: StyleChain) -> SourceResult<Content> {
-        Ok(self.content())
+impl Show for AnchorElem {
+    fn show(&self, _vt: &mut Vt, styles: StyleChain) -> SourceResult<Content> {
+        let mut content = Content::empty();
+
+        if let Some(supplement) = self.supplement() {
+            content += supplement + TextElem::packed('\u{a0}')
+        }
+
+        content += self
+            .numbering()
+            .map(|numbering| {
+                self.counter().update(super::CounterUpdate::Step(self.level(styles)))
+                    + self.counter().display(Some(numbering), false)
+            })
+            .unwrap_or_default();
+
+        Ok(content)
     }
 }
 
@@ -57,19 +68,30 @@ impl Show for CaptionElem {
 ///
 /// Display: Figure
 /// Category: meta
-#[element(Locatable, Synthesize, Count, Show, LocalName, ReferenceInfo)]
+#[element(Locatable, Synthesize, Show, LocalName, RefAnchor)]
 pub struct FigureElem {
     /// The content of the figure. Often, an [image]($func/image).
     #[required]
     pub body: Content,
 
-    /// The figure's caption.
-    pub caption: Option<CaptionElem>,
+    /// Supplement prefix text in the caption.
+    pub supplement: Smart<Option<Supplement>>,
+
+    /// Counter used in this figure for numbering.
+    #[default(Counter::of(Self::func()))]
+    pub counter: Counter,
 
     /// How to number the figure. Accepts a
     /// [numbering pattern or function]($func/numbering).
     #[default(Some(NumberingPattern::from_str("1").unwrap().into()))]
     pub numbering: Option<Numbering>,
+
+    /// The figure's caption.
+    #[default(Some(TextElem::packed(": ")))]
+    pub sep: Option<Content>,
+
+    /// Caption of this figure.
+    pub caption: Option<Content>,
 
     /// The vertical gap between the body and caption.
     #[default(Em::new(0.65).into())]
@@ -86,31 +108,22 @@ impl Show for FigureElem {
     fn show(&self, vt: &mut Vt, styles: StyleChain) -> SourceResult<Content> {
         let mut realized = self.body();
 
-        if let Some(caption_elem) = self.caption(styles) {
-            let mut caption = Content::empty();
+        let mut cap = Content::empty();
 
-            if let Some(numbering) = self.numbering(styles) {
-                caption += self.resolve_supplement(vt, styles, self.clone().pack())?;
+        if self.numbering(styles).is_some() {
+            cap += self.anchor(vt, styles)?.show(vt, styles)?;
+        }
 
-                if !caption.is_empty() {
-                    caption += TextElem::packed('\u{a0}');
-                }
-
-                let counter = self.counter(styles);
-
-                caption +=
-                    counter.clone().display(Some(numbering), false).spanned(self.span())
-                        + caption_elem.sep(styles).unwrap_or(TextElem::packed(": "));
-
-                if counter != Counter::of(Self::func()) {
-                    caption += counter.update(CounterUpdate::Step(NonZeroUsize::ONE))
-                }
+        if let Some(caption) = self.caption(styles) {
+            if !cap.is_empty() {
+                cap += self.sep(styles).unwrap_or_default();
             }
+            cap += caption
+        }
 
-            caption += caption_elem.content();
-
+        if !cap.is_empty() {
             realized += VElem::weak(self.gap(styles).into()).pack();
-            realized += caption;
+            realized += cap;
         }
 
         Ok(BlockElem::new()
@@ -121,33 +134,18 @@ impl Show for FigureElem {
     }
 }
 
-impl Count for FigureElem {
-    fn update(&self) -> Option<CounterUpdate> {
-        (self.counter(StyleChain::default()) == Counter::of(Self::func())
-            && self.numbering(StyleChain::default()).is_some())
-        .then(|| CounterUpdate::Step(NonZeroUsize::ONE))
-    }
-}
-
-impl ReferenceInfo for FigureElem {
-    fn counter(&self, styles: StyleChain) -> Counter {
-        self.caption(styles)
-            .and_then(|caption| caption.counter(styles))
-            .unwrap_or(Counter::of(Self::func()))
-    }
-
-    fn supplement(&self, styles: StyleChain) -> Smart<Option<Supplement>> {
-        self.caption(styles)
-            .map(|caption| caption.supplement(styles))
-            .unwrap_or(Smart::Auto)
-    }
-}
-
 impl LocalName for FigureElem {
     fn local_name(&self, lang: Lang) -> &'static str {
         match lang {
             Lang::GERMAN => "Abbildung",
             Lang::ENGLISH | _ => "Figure",
         }
+    }
+}
+
+impl RefAnchor for FigureElem {
+    fn anchor(&self, vt: &mut Vt, styles: StyleChain) -> SourceResult<AnchorElem> {
+        let supplement = Supplement::resolve(self.supplement(styles), vt, self, styles)?;
+        Ok(AnchorElem::new(self.counter(styles), supplement, self.numbering(styles)))
     }
 }

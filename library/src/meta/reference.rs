@@ -1,4 +1,5 @@
-use super::{BibliographyElem, CiteElem, Counter, LocalName, Numbering};
+use super::{BibliographyElem, CiteElem, LocalName};
+use crate::meta::AnchorElem;
 use crate::prelude::*;
 use crate::text::TextElem;
 
@@ -79,35 +80,6 @@ pub struct RefElem {
     pub citation: Option<CiteElem>,
 }
 
-/// A citable element can impl this trait to set the supplement content
-/// when it be referenced.
-pub trait ReferenceInfo: LocalName {
-    /// The counter used in reference.
-    fn counter(&self, styles: StyleChain) -> Counter;
-
-    /// supplement used in reference.
-    fn supplement(&self, _styles: StyleChain) -> Smart<Option<Supplement>>;
-
-    // default logic of convert supplement into content in reference
-    fn resolve_supplement(
-        &self,
-        vt: &mut Vt,
-        styles: StyleChain,
-        elem: Content,
-    ) -> SourceResult<Content> {
-        Ok(match self.supplement(styles) {
-            Smart::Auto => self.local_name_content(styles),
-            Smart::Custom(None) => Content::empty(),
-            Smart::Custom(Some(sup)) => match sup {
-                Supplement::Content(c) => c,
-                Supplement::Func(func) => func
-                    .call_vt(vt, [elem.into(), self.local_name_content(styles).into()])?
-                    .display(),
-            },
-        })
-    }
-}
-
 impl Synthesize for RefElem {
     fn synthesize(&mut self, styles: StyleChain) {
         let citation = self.to_citation(styles);
@@ -144,25 +116,25 @@ impl Show for RefElem {
             bail!(self.span(), "cannot reference {}", elem.func().name());
         }
 
-        let supplement = self.supplement(styles);
-
-        let default_supplement = elem
-            .with::<dyn LocalName>()
-            .map(|elem| elem.local_name_content(styles))
-            .unwrap_or_default();
-
-        let ref_supplement = if let Some(ref_info) = elem.with::<dyn ReferenceInfo>() {
-            ref_info.resolve_supplement(vt, styles, elem.clone())?
-        } else {
-            default_supplement
+        let Some(referenceable) = elem.with::<dyn RefAnchor>() else {
+            bail!(self.span(), "cannot reference {}", elem.func().name());
         };
 
-        let mut supplement = match supplement {
-            Smart::Auto => ref_supplement,
+        let anchor = referenceable.anchor(vt, styles)?;
+
+        let Some(numbering) = anchor.numbering() else {
+            bail!(self.span(), "cannot reference {} without numbering", elem.func().name());
+        };
+
+        let mut supplement = match self.supplement(styles) {
+            Smart::Auto => anchor.supplement().unwrap_or_default(),
             Smart::Custom(None) => Content::empty(),
             Smart::Custom(Some(Supplement::Content(content))) => content.clone(),
             Smart::Custom(Some(Supplement::Func(func))) => func
-                .call_vt(vt, [elem.clone().into(), ref_supplement.into()])?
+                .call_vt(
+                    vt,
+                    [elem.clone().into(), anchor.supplement().unwrap_or_default().into()],
+                )?
                 .display(),
         };
 
@@ -170,16 +142,8 @@ impl Show for RefElem {
             supplement += TextElem::packed('\u{a0}');
         }
 
-        let Some(numbering) = elem.cast_field::<Numbering>("numbering") else {
-            bail!(self.span(), "only numbered elements can be referenced");
-        };
-
-        let counter = if let Some(elem) = elem.with::<dyn ReferenceInfo>() {
-            elem.counter(styles)
-        } else {
-            Counter::of(elem.func())
-        };
-        let numbers = counter
+        let numbers = anchor
+            .counter()
             .at(vt, elem.location().unwrap())?
             .display(vt, &numbering.trimmed())?;
 
@@ -201,6 +165,12 @@ impl RefElem {
     }
 }
 
+pub trait RefAnchor {
+    // Return a anchor for used when referencing it.
+    // If it's numbering is none, means this element is not referenceable.
+    fn anchor(&self, vt: &mut Vt, styles: StyleChain) -> SourceResult<AnchorElem>;
+}
+
 /// Additional content for a reference.
 pub enum Supplement {
     Content(Content),
@@ -217,5 +187,27 @@ cast_to_value! {
     v: Supplement => match v {
         Supplement::Content(v) => v.into(),
         Supplement::Func(v) => v.into(),
+    }
+}
+
+impl Supplement {
+    pub fn resolve<T: Element + LocalName + Clone>(
+        arg: Smart<Option<Self>>,
+        vt: &mut Vt,
+        elem: &T,
+        styles: StyleChain,
+    ) -> SourceResult<Option<Content>> {
+        match arg {
+            Smart::Auto => Ok(Some(elem.local_name_content(styles))),
+            Smart::Custom(None) => Ok(None),
+            Smart::Custom(Some(Supplement::Content(content))) => Ok(Some(content)),
+            Smart::Custom(Some(Supplement::Func(func))) => Ok(Some(
+                func.call_vt(
+                    vt,
+                    [elem.clone().pack().into(), elem.local_name_content(styles).into()],
+                )?
+                .display(),
+            )),
+        }
     }
 }

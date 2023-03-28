@@ -390,14 +390,10 @@ impl Counter {
                 }
             }
 
-            if let Some(update) = match elem.to::<UpdateElem>() {
-                Some(elem) => Some(elem.update()),
-                None => match elem.with::<dyn Count>() {
-                    Some(countable) => countable.update(),
-                    None => Some(CounterUpdate::Step(NonZeroUsize::ONE)),
-                },
-            } {
+            if let Some(update) = elem.to::<UpdateElem>().map(|e| e.update()) {
                 state.update(&mut vt, update)?;
+            } else {
+                state.update(&mut vt, CounterUpdate::Step(NonZeroUsize::ONE))?
             }
 
             stops.push((state.clone(), page));
@@ -412,7 +408,9 @@ impl Counter {
             Selector::Elem(UpdateElem::func(), Some(dict! { "counter" => self.clone() }));
 
         if let CounterKey::Selector(key) = &self.0 {
-            selector = Selector::Any(eco_vec![selector, key.clone()]);
+            if !matches!(key, Selector::Elem(_, _)) {
+                selector = Selector::Any(eco_vec![selector, key.clone()]);
+            }
         }
 
         selector
@@ -496,12 +494,6 @@ cast_from_value! {
     CounterUpdate: "counter update",
     v: CounterState => Self::Set(v),
     v: Func => Self::Func(v),
-}
-
-/// Elements that have special counting behaviour.
-pub trait Count {
-    /// Get the counter update for this element.
-    fn update(&self) -> Option<CounterUpdate>;
 }
 
 /// Counts through elements with different levels.
@@ -589,8 +581,8 @@ impl Show for DisplayElem {
             .numbering()
             .or_else(|| {
                 let CounterKey::Selector(Selector::Elem(func, _)) = counter.0 else {
-                return None;
-            };
+                    return None;
+                };
 
                 if func == HeadingElem::func() {
                     HeadingElem::numbering_in(styles)

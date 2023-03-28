@@ -1,10 +1,12 @@
 use typst::font::FontWeight;
 
-use super::{Counter, CounterUpdate, LocalName, Numbering};
-use crate::layout::{BlockElem, HElem, VElem};
-use crate::meta::Count;
-use crate::prelude::*;
+use super::{Counter, LocalName, Numbering, RefAnchor};
 use crate::text::{TextElem, TextSize};
+use crate::{
+    layout::{BlockElem, HElem, VElem},
+    meta::Supplement,
+};
+use crate::{meta::AnchorElem, prelude::*};
 
 /// A section heading.
 ///
@@ -41,7 +43,7 @@ use crate::text::{TextElem, TextSize};
 ///
 /// Display: Heading
 /// Category: meta
-#[element(Locatable, Synthesize, Count, Show, Finalize, LocalName)]
+#[element(Locatable, Synthesize, Show, Finalize, LocalName, RefAnchor)]
 pub struct HeadingElem {
     /// The logical nesting depth of the heading, starting from one.
     #[default(NonZeroUsize::ONE)]
@@ -79,6 +81,24 @@ pub struct HeadingElem {
     pub body: Content,
 }
 
+impl HeadingElem {
+    fn create_anchor(
+        &self,
+        is_ref: bool,
+        vt: &mut Vt,
+        styles: StyleChain,
+    ) -> SourceResult<AnchorElem> {
+        let supplement = if is_ref {
+            Supplement::resolve(Smart::Auto, vt, self, styles)?
+        } else {
+            None
+        };
+
+        Ok(AnchorElem::new(Counter::of(Self::func()), supplement, self.numbering(styles))
+            .with_level(self.level(styles)))
+    }
+}
+
 impl Synthesize for HeadingElem {
     fn synthesize(&mut self, styles: StyleChain) {
         self.push_level(self.level(styles));
@@ -88,11 +108,12 @@ impl Synthesize for HeadingElem {
 }
 
 impl Show for HeadingElem {
-    fn show(&self, _: &mut Vt, styles: StyleChain) -> SourceResult<Content> {
+    fn show(&self, vt: &mut Vt, styles: StyleChain) -> SourceResult<Content> {
         let mut realized = self.body();
-        if let Some(numbering) = self.numbering(styles) {
-            realized = Counter::of(Self::func())
-                .display(Some(numbering), false)
+        if self.numbering(styles).is_some() {
+            realized = self
+                .create_anchor(false, vt, styles)?
+                .show(vt, styles)?
                 .spanned(self.span())
                 + HElem::new(Em::new(0.3).into()).with_weak(true).pack()
                 + realized;
@@ -124,13 +145,13 @@ impl Finalize for HeadingElem {
     }
 }
 
-impl Count for HeadingElem {
-    fn update(&self) -> Option<CounterUpdate> {
-        self.numbering(StyleChain::default())
-            .is_some()
-            .then(|| CounterUpdate::Step(self.level(StyleChain::default())))
-    }
-}
+// impl Count for HeadingElem {
+//     fn update(&self) -> Option<CounterUpdate> {
+//         self.numbering(StyleChain::default())
+//             .is_some()
+//             .then(|| CounterUpdate::Step(self.level(StyleChain::default())))
+//     }
+// }
 
 cast_from_value! {
     HeadingElem,
@@ -143,5 +164,11 @@ impl LocalName for HeadingElem {
             Lang::GERMAN => "Abschnitt",
             Lang::ENGLISH | _ => "Section",
         }
+    }
+}
+
+impl RefAnchor for HeadingElem {
+    fn anchor(&self, vt: &mut Vt, styles: StyleChain) -> SourceResult<super::AnchorElem> {
+        self.create_anchor(true, vt, styles)
     }
 }

@@ -38,13 +38,14 @@ use self::ctx::*;
 use self::fragment::*;
 use self::row::*;
 use self::spacing::*;
-use crate::layout::{HElem, ParElem, Spacing};
-use crate::meta::{
-    Count, Counter, CounterUpdate, LocalName, Numbering, ReferenceInfo, Supplement,
-};
+use crate::meta::{AnchorElem, Counter, LocalName, Numbering, Supplement};
 use crate::prelude::*;
 use crate::text::{
     families, variant, FontFamily, FontList, LinebreakElem, SpaceElem, TextElem, TextSize,
+};
+use crate::{
+    layout::{HElem, ParElem, Spacing},
+    meta::RefAnchor,
 };
 
 /// Create a module with all math definitions.
@@ -136,15 +137,7 @@ pub fn module() -> Module {
 /// Display: Equation
 /// Category: math
 #[element(
-    Locatable,
-    Synthesize,
-    Show,
-    Finalize,
-    Layout,
-    LayoutMath,
-    Count,
-    LocalName,
-    ReferenceInfo
+    Locatable, Synthesize, Show, Finalize, Layout, LayoutMath, LocalName, RefAnchor
 )]
 pub struct EquationElem {
     /// Whether the equation is displayed as a separate block.
@@ -155,7 +148,8 @@ pub struct EquationElem {
     pub supplement: Smart<Option<Supplement>>,
 
     // Custom counter for this equation.
-    pub counter: Option<Counter>,
+    #[default(Counter::of(Self::func()))]
+    pub counter: Counter,
 
     /// How to [number]($func/numbering) block-level equations.
     ///
@@ -173,6 +167,25 @@ pub struct EquationElem {
     /// The contents of the equation.
     #[required]
     pub body: Content,
+}
+
+impl EquationElem {
+    fn create_anchor(
+        &self,
+        is_ref: bool,
+        vt: &mut Vt,
+        styles: StyleChain,
+    ) -> SourceResult<AnchorElem> {
+        let supplement = if is_ref {
+            Supplement::resolve(self.supplement(styles), vt, self, styles)?
+        } else {
+            None
+        };
+
+        let numbering = self.block(styles).then(|| self.numbering(styles)).flatten();
+
+        Ok(AnchorElem::new(self.counter(styles), supplement, numbering))
+    }
 }
 
 impl Synthesize for EquationElem {
@@ -231,18 +244,14 @@ impl Layout for EquationElem {
         let mut frame = ctx.layout_frame(self)?;
 
         if block {
-            if let Some(numbering) = self.numbering(styles) {
+            if self.numbering(styles).is_some() {
                 let pod = Regions::one(regions.base(), Axes::splat(false));
-                let counter = ReferenceInfo::counter(self, styles);
 
-                let mut counter_content = counter.clone().display(Some(numbering), false);
-
-                if counter != Counter::of(Self::func()) {
-                    counter_content +=
-                        counter.update(CounterUpdate::Step(NonZeroUsize::ONE))
-                }
-
-                let counter = counter_content.layout(vt, styles, pod)?.into_frame();
+                let counter = self
+                    .create_anchor(false, vt, styles)?
+                    .show(vt, styles)?
+                    .layout(vt, styles, pod)?
+                    .into_frame();
 
                 let width = if regions.size.x.is_finite() {
                     regions.size.x
@@ -279,21 +288,9 @@ impl Layout for EquationElem {
     }
 }
 
-impl Count for EquationElem {
-    fn update(&self) -> Option<CounterUpdate> {
-        (ReferenceInfo::counter(self, StyleChain::default()) == Counter::of(Self::func())
-            && self.block(StyleChain::default())
-            && self.numbering(StyleChain::default()).is_some())
-        .then(|| CounterUpdate::Step(NonZeroUsize::ONE))
-    }
-}
-
-impl ReferenceInfo for EquationElem {
-    fn counter(&self, styles: StyleChain) -> Counter {
-        Self::counter(self, styles).unwrap_or(Counter::of(Self::func()))
-    }
-    fn supplement(&self, styles: StyleChain) -> Smart<Option<Supplement>> {
-        self.supplement(styles)
+impl RefAnchor for EquationElem {
+    fn anchor(&self, vt: &mut Vt, styles: StyleChain) -> SourceResult<AnchorElem> {
+        self.create_anchor(true, vt, styles)
     }
 }
 
