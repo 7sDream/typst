@@ -12,7 +12,7 @@ use crate::text::TextElem;
 ///
 /// Display: Caption
 /// Category: meta
-#[element(Locatable)]
+#[element(Locatable, Show)]
 pub struct CaptionElem {
     /// Caption content.
     #[required]
@@ -31,6 +31,12 @@ pub struct CaptionElem {
 cast_from_value! {
     CaptionElem,
     v: Content => v.to::<Self>().map(|c| c.clone()).unwrap_or_else(|| CaptionElem::new(v))
+}
+
+impl Show for CaptionElem {
+    fn show(&self, _vt: &mut Vt, _styles: StyleChain) -> SourceResult<Content> {
+        Ok(self.content())
+    }
 }
 
 /// A figure with an optional caption.
